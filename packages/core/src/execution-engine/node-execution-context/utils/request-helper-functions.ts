@@ -14,12 +14,18 @@ import type {
 } from '@n8n/client-oauth2';
 import { ClientOAuth2 } from '@n8n/client-oauth2';
 import { Container } from '@n8n/di';
+import {
+	createN8nProxyAgent,
+	type ExplicitProxyObject,
+	type N8nProxyAgentOptions,
+} from '@n8n/http-agent';
 import type { AxiosError, AxiosHeaders, AxiosRequestConfig, AxiosResponse } from 'axios';
 import axios from 'axios';
 import crypto, { createHmac } from 'crypto';
 import FormData from 'form-data';
+import type { Agent as HttpAgentBase } from 'http';
 import { IncomingMessage } from 'http';
-import { Agent, type AgentOptions } from 'https';
+import { Agent as HttpsAgentBase, type AgentOptions as HttpsAgentOptionsNative } from 'https';
 import get from 'lodash/get';
 import isEmpty from 'lodash/isEmpty';
 import merge from 'lodash/merge';
@@ -126,10 +132,10 @@ const getHostFromRequestObject = (
 };
 
 const getBeforeRedirectFn =
-	(agentOptions: AgentOptions, axiosConfig: AxiosRequestConfig) =>
+	(agentOptions: HttpsAgentOptionsNative, axiosConfig: AxiosRequestConfig) =>
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	(redirectedRequest: Record<string, any>) => {
-		const redirectAgent = new Agent({
+		const redirectAgent = new HttpsAgentBase({
 			...agentOptions,
 			// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
 			servername: redirectedRequest.hostname,
@@ -502,18 +508,20 @@ export async function parseRequestObject(requestObject: IRequestOptions) {
 	}
 
 	const host = getHostFromRequestObject(requestObject);
-	const agentOptions: AgentOptions = { ...requestObject.agentOptions };
+	const agentOptionsForLegacy: HttpsAgentOptionsNative = {
+		...(requestObject.agentOptions as HttpsAgentOptionsNative),
+	};
 	if (host) {
-		agentOptions.servername = host;
+		agentOptionsForLegacy.servername = host;
 	}
 	if (requestObject.rejectUnauthorized === false) {
-		agentOptions.rejectUnauthorized = false;
-		agentOptions.secureOptions = crypto.constants.SSL_OP_LEGACY_SERVER_CONNECT;
+		agentOptionsForLegacy.rejectUnauthorized = false;
+		agentOptionsForLegacy.secureOptions = crypto.constants.SSL_OP_LEGACY_SERVER_CONNECT;
 	}
 
-	axiosConfig.httpsAgent = new Agent(agentOptions);
+	axiosConfig.httpsAgent = new HttpsAgentBase(agentOptionsForLegacy);
 
-	axiosConfig.beforeRedirect = getBeforeRedirectFn(agentOptions, axiosConfig);
+	axiosConfig.beforeRedirect = getBeforeRedirectFn(agentOptionsForLegacy, axiosConfig);
 
 	if (requestObject.timeout !== undefined) {
 		axiosConfig.timeout = requestObject.timeout;
@@ -723,14 +731,14 @@ export async function proxyRequestToAxios(
 // eslint-disable-next-line complexity
 export function convertN8nRequestToAxios(n8nRequest: IHttpRequestOptions): AxiosRequestConfig {
 	// Destructure properties with the same name first.
-	const { headers, method, timeout, auth, proxy, url } = n8nRequest;
+	const { headers, method, timeout, auth, url } = n8nRequest; // Removed 'proxy'
 
 	const axiosRequest: AxiosRequestConfig = {
 		headers: headers ?? {},
 		method,
 		timeout,
 		auth,
-		proxy,
+		// proxy, // Removed: Will be handled by the agent
 		url,
 		maxBodyLength: Infinity,
 		maxContentLength: Infinity,
@@ -754,17 +762,54 @@ export function convertN8nRequestToAxios(n8nRequest: IHttpRequestOptions): Axios
 		axiosRequest.responseType = n8nRequest.encoding;
 	}
 
-	const host = getHostFromRequestObject(n8nRequest);
-	const agentOptions: AgentOptions = {};
-	if (host) {
-		agentOptions.servername = host;
-	}
-	if (n8nRequest.skipSslCertificateValidation === true) {
-		agentOptions.rejectUnauthorized = false;
-	}
-	axiosRequest.httpsAgent = new Agent(agentOptions);
+	const currentFullUrl = axiosRequest.baseURL
+		? `${axiosRequest.baseURL}${axiosRequest.url ?? ''}`
+		: axiosRequest.url;
+	let customAgentUsed = false;
 
-	axiosRequest.beforeRedirect = getBeforeRedirectFn(agentOptions, axiosRequest);
+	if (currentFullUrl) {
+		const host = getHostFromRequestObject({ url: currentFullUrl });
+		const agentOpts: N8nProxyAgentOptions = {
+			skipSslCertificateValidation: n8nRequest.skipSslCertificateValidation === true,
+			servername: host ?? undefined,
+		};
+
+		let explicitProxyForAgent: string | ExplicitProxyObject | undefined;
+		if (typeof n8nRequest.proxy === 'string') {
+			explicitProxyForAgent = n8nRequest.proxy;
+		} else if (typeof n8nRequest.proxy === 'object' && n8nRequest.proxy !== null) {
+			explicitProxyForAgent = n8nRequest.proxy as ExplicitProxyObject;
+		}
+
+		const customAgent = createN8nProxyAgent(
+			currentFullUrl.toString(),
+			agentOpts,
+			explicitProxyForAgent,
+		);
+
+		if (currentFullUrl.toString().startsWith('https:')) {
+			axiosRequest.httpsAgent = customAgent;
+		} else {
+			axiosRequest.httpAgent = customAgent;
+		}
+		customAgentUsed = true;
+
+		delete axiosRequest.beforeRedirect;
+	} else {
+		// Fallback to original agent logic if targetUrl cannot be determined (should be rare)
+		// This part retains the original HttpsAgentBase instantiation for non-proxied, non-custom-agent scenarios
+		const host = getHostFromRequestObject(n8nRequest);
+		const originalAgentOptions: HttpsAgentOptionsNative = {};
+		if (host) {
+			originalAgentOptions.servername = host;
+		}
+		if (n8nRequest.skipSslCertificateValidation === true) {
+			originalAgentOptions.rejectUnauthorized = false;
+		}
+		axiosRequest.httpsAgent = new HttpsAgentBase(originalAgentOptions);
+		// Only set beforeRedirect if we are using the original HttpsAgentBase directly
+		axiosRequest.beforeRedirect = getBeforeRedirectFn(originalAgentOptions, axiosRequest);
+	}
 
 	if (n8nRequest.arrayFormat !== undefined) {
 		axiosRequest.paramsSerializer = (params) => {

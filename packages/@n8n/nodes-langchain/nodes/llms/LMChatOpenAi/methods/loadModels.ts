@@ -1,3 +1,4 @@
+import { createN8nProxyAgent } from '@n8n/http-agent';
 import type { ILoadOptionsFunctions, INodeListSearchResult } from 'n8n-workflow';
 import OpenAI from 'openai';
 
@@ -11,7 +12,15 @@ export async function searchModels(
 		(credentials.url as string) ||
 		'https://api.openai.com/v1';
 
-	const openai = new OpenAI({ baseURL, apiKey: credentials.apiKey as string });
+	const agentCreationOpts = {
+		skipSslCertificateValidation: false,
+	};
+	const customAgent = createN8nProxyAgent(baseURL, agentCreationOpts);
+	const openai = new OpenAI({
+		baseURL,
+		apiKey: credentials.apiKey as string,
+		httpAgent: customAgent,
+	});
 	const { data: models = [] } = await openai.models.list();
 
 	const filteredModels = models.filter((model: { id: string }) => {

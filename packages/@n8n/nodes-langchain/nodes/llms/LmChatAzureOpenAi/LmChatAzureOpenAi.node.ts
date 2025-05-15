@@ -21,6 +21,7 @@ import type {
 } from './types';
 import { makeN8nLlmFailedAttemptHandler } from '../n8nLlmFailedAttemptHandler';
 import { N8nLlmTracing } from '../N8nLlmTracing';
+import { createN8nProxyAgent } from '@n8n/http-agent';
 
 export class LmChatAzureOpenAi implements INodeType {
 	description: INodeTypeDescription = {
@@ -103,11 +104,18 @@ export class LmChatAzureOpenAi implements INodeType {
 
 			this.logger.info(`Instantiating AzureChatOpenAI model with deployment: ${modelName}`);
 
+			const agentCreationOpts = {
+				skipSslCertificateValidation: false,
+			};
+			const customAgent = createN8nProxyAgent(modelConfig.azureOpenAIEndpoint, agentCreationOpts);
 			// Create and return the model
 			const model = new AzureChatOpenAI({
 				azureOpenAIApiDeploymentName: modelName,
 				...modelConfig,
 				...options,
+				configuration: {
+					httpAgent: customAgent,
+				},
 				timeout: options.timeout ?? 60000,
 				maxRetries: options.maxRetries ?? 2,
 				callbacks: [new N8nLlmTracing(this)],

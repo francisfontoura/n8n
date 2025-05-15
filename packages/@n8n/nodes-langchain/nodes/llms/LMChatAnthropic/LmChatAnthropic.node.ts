@@ -17,6 +17,7 @@ import { getConnectionHintNoticeField } from '@utils/sharedFields';
 import { searchModels } from './methods/searchModels';
 import { makeN8nLlmFailedAttemptHandler } from '../n8nLlmFailedAttemptHandler';
 import { N8nLlmTracing } from '../N8nLlmTracing';
+import { createN8nProxyAgent } from '@n8n/http-agent';
 
 const modelField: INodeProperties = {
 	displayName: 'Model',
@@ -318,6 +319,13 @@ export class LmChatAnthropic implements INodeType {
 			};
 		}
 
+		const targetUrl = credentials.url ?? 'https://api.anthropic.com';
+
+		const agentCreationOpts = {
+			skipSslCertificateValidation: false,
+		};
+		const customAgent = createN8nProxyAgent(targetUrl, agentCreationOpts);
+
 		const model = new ChatAnthropic({
 			anthropicApiKey: credentials.apiKey,
 			modelName,
@@ -329,6 +337,10 @@ export class LmChatAnthropic implements INodeType {
 			callbacks: [new N8nLlmTracing(this, { tokensUsageParser })],
 			onFailedAttempt: makeN8nLlmFailedAttemptHandler(this),
 			invocationKwargs,
+			streaming: false,
+			clientOptions: {
+				httpAgent: customAgent,
+			},
 		});
 
 		return {

@@ -1,6 +1,7 @@
 /* eslint-disable n8n-nodes-base/node-dirname-against-convention */
 
 import { ChatOpenAI, type ClientOptions } from '@langchain/openai';
+import { createN8nProxyAgent } from '@n8n/http-agent';
 import {
 	NodeConnectionTypes,
 	type INodeType,
@@ -362,6 +363,14 @@ export class LmChatOpenAi implements INodeType {
 		if (options.reasoningEffort && ['low', 'medium', 'high'].includes(options.reasoningEffort))
 			modelKwargs.reasoning_effort = options.reasoningEffort;
 
+		const targetUrl = configuration.baseURL || 'https://api.openai.com/v1';
+
+		const agentCreationOpts = {
+			skipSslCertificateValidation: false,
+		};
+		const customAgent = createN8nProxyAgent(targetUrl, agentCreationOpts);
+
+		configuration.httpAgent = customAgent; // For HTTP
 		const model = new ChatOpenAI({
 			openAIApiKey: credentials.apiKey as string,
 			modelName,
@@ -371,6 +380,7 @@ export class LmChatOpenAi implements INodeType {
 			configuration,
 			callbacks: [new N8nLlmTracing(this)],
 			modelKwargs,
+			streaming: false,
 			onFailedAttempt: makeN8nLlmFailedAttemptHandler(this, openAiFailedAttemptHandler),
 		});
 

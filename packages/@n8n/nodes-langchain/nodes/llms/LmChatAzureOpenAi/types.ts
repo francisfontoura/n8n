@@ -39,7 +39,7 @@ export interface AzureOpenAIOptions {
 export interface AzureOpenAIBaseModelConfig {
 	azureOpenAIApiInstanceName: string;
 	azureOpenAIApiVersion: string;
-	azureOpenAIEndpoint?: string;
+	azureOpenAIEndpoint: string;
 }
 
 /**
